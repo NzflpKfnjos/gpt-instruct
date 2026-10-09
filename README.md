@@ -141,6 +141,25 @@ python3 codex-instruct.py --reset
 
 脚本会保存部署前状态；`--reset` 不会覆盖 provider、模型、认证等其他配置。完整配置快照仅供人工应急，通过 `--restore-snapshot` 显式恢复。
 
+### 部署到 pi
+
+使用 `--target pi` 将 rc2 提示词追加到 pi 的全局系统指令：
+
+```bash
+python3 codex-instruct.py --apply --version gpt-6.1-v1-rc2 --target pi
+
+# 预览部署 / 指定 pi agent 目录
+python3 codex-instruct.py --apply --version gpt-6.1-v1-rc2 --target pi --dry-run
+python3 codex-instruct.py --apply --version gpt-6.1-v1-rc2 --target pi --pi-dir ~/.pi/agent
+
+# 恢复部署前的 pi 指令
+python3 codex-instruct.py --reset --target pi
+```
+
+目标目录按 `--pi-dir`、`PI_CODING_AGENT_DIR`、`~/.pi/agent` 的顺序选择。脚本保留原有 `APPEND_SYSTEM.md` 内容，将所选提示词追加到该文件，并记录恢复状态；每次修改已有文件前都会创建备份。重复部署不会叠加提示词，切换版本保留最初的恢复状态。若文件在部署后被手动修改，部署和回滚会停止并保留修改，需先恢复最近一次部署时的文件内容再重试。
+
+部署后在 pi 中执行 `/reload` 或重新启动。项目内的 `.pi/APPEND_SYSTEM.md` 会优先于全局文件；这类项目可用 `--pi-dir .pi` 部署到项目目录，并按 pi 的项目信任机制加载。部署只改变指令，不切换 pi 的模型。未指定 `--target` 时仍默认部署到 Codex。
+
 ### 手动部署与回滚
 
 解压稳定 ZIP，将提示词复制到 `CODEX_HOME`，并在 `config.toml` 顶层写入：

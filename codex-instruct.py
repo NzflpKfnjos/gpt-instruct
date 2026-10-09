@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy or remove a packaged gpt-instruct Codex instruction file.
+"""Deploy or remove packaged gpt-instruct instructions for Codex or Pi.
 
 The public repository stores each selectable prompt as a ZIP archive. Applying
 one extracts its Markdown file into CODEX_HOME, snapshots config.toml, and sets the
@@ -110,14 +110,14 @@ def intro_text() -> str:
 
 gpt-5.6-sol-v45 是当前生产使用的{zh_default}；gpt-6-astra-v2-rc1 与 gpt-6.1-sol-v1-rc2 是可选预发布版。
 
-部署后会将所选 ZIP 内提示词复制到 CODEX_HOME，在 config.toml 中写入 model_instructions_file 项，并创建操作前快照。卸载时只恢复这一项，不会覆盖 CCSwitch 管理的 provider、模型或认证配置。自定义文件仍可通过 --file 显式部署。
+部署后会将所选 ZIP 内提示词复制到 CODEX_HOME，在 config.toml 中写入 model_instructions_file 项，并创建操作前快照。卸载时只恢复这一项，不会覆盖 CCSwitch 管理的 provider、模型或认证配置。自定义文件仍可通过 --file 显式部署。使用 --target pi 则部署到 pi 的 APPEND_SYSTEM.md，并保留原有指令以便恢复。
 
 {en_banner}
 {en_title}
 
 gpt-5.6-sol-v45 is the current {en_default}; gpt-6-astra-v2-rc1 and gpt-6.1-sol-v1-rc2 are optional prereleases.
 
-Deployment copies the selected ZIP prompt to CODEX_HOME, writes the model_instructions_file entry to config.toml, and creates a pre-operation snapshot. Uninstall restores only that entry and never replaces provider, model, or authentication settings managed by CCSwitch. A custom file can still be deployed explicitly with --file.
+Deployment copies the selected ZIP prompt to CODEX_HOME, writes the model_instructions_file entry to config.toml, and creates a pre-operation snapshot. Uninstall restores only that entry and never replaces provider, model, or authentication settings managed by CCSwitch. A custom file can still be deployed explicitly with --file. Use --target pi to deploy to Pi's APPEND_SYSTEM.md, retaining previous instructions for rollback.
 """
 
 
@@ -723,9 +723,121 @@ def inferred_md_filename(source: Path, requested_name: str | None) -> str:
     return f"{source.stem}.md"
 
 
+PI_STATE_FILENAME = ".gpt-instruct-pi-state.json"
+
+
+def selected_pi_dir(pi_dir: str | None) -> Path:
+    return Path(
+        pi_dir or os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi" / "agent"
+    ).expanduser().resolve()
+
+
+def read_pi_state(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(state, dict)
+        or state.get("version") != 1
+        or not isinstance(state.get("sha256"), str)
+        or not SHA256_PATTERN.fullmatch(state["sha256"])
+        or (
+            state.get("previous_text") is not None
+            and not isinstance(state.get("previous_text"), str)
+        )
+        or "previous_text" not in state
+    ):
+        raise ValueError(f"invalid Pi deployment state: {path}")
+    return state
+
+
+def manage_pi_prompt(
+    args: argparse.Namespace,
+    prompt_path: Path | None = None,
+    md_filename: str | None = None,
+) -> int:
+    """Append to Pi's native prompt file, retaining the original for rollback."""
+    pi_dir = selected_pi_dir(args.pi_dir)
+    destination = pi_dir / "APPEND_SYSTEM.md"
+    state_path = pi_dir / PI_STATE_FILENAME
+    resetting = prompt_path is None
+    try:
+        for path in (destination, state_path):
+            if path.is_symlink():
+                raise ValueError(f"refusing to overwrite symlink: {path}")
+        state = read_pi_state(state_path)
+        current = destination.read_bytes().decode("utf-8") if destination.exists() else None
+        if state is not None and (
+            current is None or prompt_sha256(current) != state["sha256"]
+        ):
+            raise ValueError(
+                f"Pi instructions changed after deployment; preserved: {destination}. "
+                "Restore the last deployed content before applying or resetting."
+            )
+        previous = state["previous_text"] if state else current
+        assert previous is None or isinstance(previous, str)
+        if resetting:
+            if state is None:
+                print("  无 Pi 部署记录 / No managed Pi installation.")
+                return 0
+            updated = previous
+        else:
+            assert prompt_path is not None and md_filename is not None
+            if not is_safe_prompt_filename(md_filename):
+                raise ValueError(f"invalid prompt filename: {md_filename}")
+            prompt_text = read_prompt(prompt_path, md_filename)
+            prefix = previous or ""
+            separator = "\n\n" if prefix and not prefix.endswith("\n") else "\n" if prefix else ""
+            updated = prefix + separator + f"<!-- gpt-instruct: {md_filename} -->\n" + prompt_text
+
+        print(f"[+] Pi target: {destination}")
+        print("  操作 / Action:", "恢复 / Reset" if resetting else f"部署 / Apply {md_filename}")
+        if args.dry_run:
+            print("  预览完成，未修改文件 / Dry run complete; no files changed.")
+            return 0
+        if resetting:
+            try:
+                answer = input("恢复部署前 Pi 指令？/ Restore previous Pi instructions? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer not in {"y", "yes", "是"}:
+                print("  已取消 / Cancelled.")
+                return 0
+        elif updated == current:
+            print("  已是最新 / Already current.")
+            return 0
+
+        pi_dir.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            snapshot = backup_file(destination)
+            print(f"  已创建备份 / Snapshot saved: {snapshot}")
+        if resetting:
+            if updated is None:
+                destination.unlink()
+            else:
+                atomic_write_text(destination, updated)
+            state_path.unlink()
+        else:
+            assert updated is not None
+            atomic_write_text(
+                state_path,
+                json.dumps(
+                    {"version": 1, "previous_text": previous, "sha256": prompt_sha256(updated)},
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+            )
+            atomic_write_text(destination, updated)
+        print("  已更新；在 Pi 中运行 /reload 或重新启动 / Updated; run /reload in Pi or restart.")
+        return 0
+    except (OSError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
+        print(f"[错误] Pi deployment: {exc}", file=sys.stderr)
+        return 2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Extract, deploy, or reset a packaged gpt-instruct Codex instruction file."
+        description="Extract, deploy, or reset packaged gpt-instruct instructions for Codex or Pi."
     )
     action_group = parser.add_mutually_exclusive_group()
     action_group.add_argument(
@@ -750,10 +862,16 @@ def main() -> int:
         help="Packaged version for --apply: gpt-5.6-v45, gpt-6-v2-rc1, or gpt-6.1-v1-rc2",
     )
     parser.add_argument("--name", "-n", help="Destination filename for --file, with or without .md")
+    parser.add_argument("--target", choices=("codex", "pi"), default="codex", help="Deployment target (default: codex)")
+    parser.add_argument("--pi-dir", help="Pi agent directory (default: PI_CODING_AGENT_DIR or ~/.pi/agent)")
     parser.add_argument("--codex-dir", help="Explicit Codex home directory, e.g. ~/.codex")
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing files")
     args = parser.parse_args()
 
+    if args.pi_dir and args.target != "pi":
+        parser.error("--pi-dir requires --target pi")
+    if args.target == "pi" and (args.codex_dir or args.restore_snapshot or args.name):
+        parser.error("--target pi does not support --codex-dir, --restore-snapshot, or --name")
     if args.name and not args.file:
         parser.error("--name 仅能与 --file 一起使用 / --name requires --file")
     if args.version and not args.apply:
@@ -767,6 +885,8 @@ def main() -> int:
         return restore_config_snapshot(args, Path(args.restore_snapshot))
     elif args.file:
         source = Path(args.file).expanduser().resolve()
+        if args.target == "pi":
+            return manage_pi_prompt(args, source, inferred_md_filename(source, args.name))
         return deploy_prompt(args, source, inferred_md_filename(source, args.name))
     else:
         action = interactive_action()
@@ -775,10 +895,14 @@ def main() -> int:
         print("未执行修改 / No modification made.")
         return 0
     if action == "reset":
+        if args.target == "pi":
+            return manage_pi_prompt(args)
         return reset_managed_install(args)
 
     _, version = action.split(":", 1)
     prompt_archive, prompt_md_filename = PROMPT_VERSIONS[version]
+    if args.target == "pi":
+        return manage_pi_prompt(args, prompt_archive, prompt_md_filename)
     return deploy_prompt(args, prompt_archive, prompt_md_filename)
 
 

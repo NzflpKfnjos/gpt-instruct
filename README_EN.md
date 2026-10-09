@@ -139,6 +139,25 @@ python3 codex-instruct.py --reset
 
 The script records pre-deployment state. `--reset` preserves provider, model, authentication, and all unrelated configuration. Full snapshots are for manual emergencies and require explicit `--restore-snapshot` use.
 
+### Deploy to Pi
+
+Use `--target pi` to append the rc2 prompt to Pi's global system instructions:
+
+```bash
+python3 codex-instruct.py --apply --version gpt-6.1-v1-rc2 --target pi
+
+# Preview deployment / select a Pi agent directory
+python3 codex-instruct.py --apply --version gpt-6.1-v1-rc2 --target pi --dry-run
+python3 codex-instruct.py --apply --version gpt-6.1-v1-rc2 --target pi --pi-dir ~/.pi/agent
+
+# Restore Pi instructions from before deployment
+python3 codex-instruct.py --reset --target pi
+```
+
+The directory is selected from `--pi-dir`, `PI_CODING_AGENT_DIR`, then `~/.pi/agent`. The script preserves existing `APPEND_SYSTEM.md` content, appends the selected prompt, and records rollback state; each change to an existing file creates a backup. Repeated deployments do not duplicate prompts, and switching versions retains the original rollback baseline. If the file is edited after deployment, applying or resetting stops and preserves those edits; restore the file's last deployed content before retrying.
+
+Run `/reload` in Pi or restart after deployment. A project's `.pi/APPEND_SYSTEM.md` takes precedence over the global file; for such projects, use `--pi-dir .pi` to deploy into the project directory and load it through Pi's project trust mechanism. Deployment changes instructions only and does not switch Pi's model. Omitting `--target` still defaults to Codex.
+
 ### Manual Deployment and Rollback
 
 Extract the stable ZIP, copy its prompt into `CODEX_HOME`, and add this top-level entry to `config.toml`:

@@ -425,5 +425,107 @@ class ManagedConfigTests(unittest.TestCase):
         self.assertEqual(destination.read_text(encoding="utf-8"), "updated deployment\n")
 
 
+class PiDeploymentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.pi_dir = self.root / "agent"
+        self.destination = self.pi_dir / "APPEND_SYSTEM.md"
+
+    def cli(self, *arguments: str) -> int:
+        with patch.object(sys, "argv", [
+            "codex-instruct.py", "--target", "pi", "--pi-dir", str(self.pi_dir),
+            *arguments,
+        ]):
+            return codex_instruct.main()
+
+    def apply(self, *arguments: str) -> int:
+        return self.cli("--apply", "--version", "gpt-6.1-v1-rc2", *arguments)
+
+    def test_rc2_deploy_is_loaded_from_native_pi_file_and_is_idempotent(self) -> None:
+        self.pi_dir.mkdir()
+        original = b"Personal rules\r\n"
+        self.destination.write_bytes(original)
+        settings = self.pi_dir / "settings.json"
+        settings.write_text('{"defaultModel":"my-model"}\n', encoding="utf-8")
+        self.assertEqual(self.apply(), 0)
+        deployed = self.destination.read_bytes()
+        archive_path, filename = codex_instruct.PROMPT_VERSIONS["gpt-6.1-v1-rc2"]
+        with zipfile.ZipFile(archive_path) as archive:
+            self.assertTrue(deployed.endswith(archive.read(filename)))
+        self.assertTrue(deployed.startswith(original))
+        self.assertEqual(self.apply(), 0)
+        self.assertEqual(self.destination.read_bytes(), deployed)
+        self.assertEqual(len(list(self.pi_dir.glob("APPEND_SYSTEM.md.bak_*"))), 1)
+        self.assertEqual(settings.read_text(), '{"defaultModel":"my-model"}\n')
+        self.assertFalse((self.pi_dir / "config.toml").exists())
+        with patch("builtins.input", return_value="y"):
+            self.assertEqual(self.cli("--reset"), 0)
+        self.assertEqual(self.destination.read_bytes(), original)
+        self.assertFalse((self.pi_dir / codex_instruct.PI_STATE_FILENAME).exists())
+
+    def test_dry_run_creates_no_directory_and_reset_removes_new_prompt(self) -> None:
+        self.assertEqual(self.apply("--dry-run"), 0)
+        self.assertFalse(self.pi_dir.exists())
+        self.assertEqual(self.apply(), 0)
+        with patch("builtins.input", side_effect=AssertionError("dry run must not ask")):
+            self.assertEqual(self.cli("--reset", "--dry-run"), 0)
+        self.assertTrue(self.destination.exists())
+        with patch("builtins.input", return_value="y"):
+            self.assertEqual(self.cli("--reset"), 0)
+        self.assertFalse(self.destination.exists())
+
+    def test_version_switch_keeps_one_prompt_and_original_reset_baseline(self) -> None:
+        self.pi_dir.mkdir()
+        self.destination.write_text("Personal rules", encoding="utf-8")
+        self.assertEqual(self.apply(), 0)
+        self.assertEqual(self.cli("--apply", "--version", "gpt-6-v2-rc1"), 0)
+        deployed = self.destination.read_text()
+        self.assertEqual(deployed.count("<!-- gpt-instruct:"), 1)
+        self.assertNotIn("gpt-6.1-sol-v1-rc2.md", deployed)
+        with patch("builtins.input", return_value="y"):
+            self.assertEqual(self.cli("--reset"), 0)
+        self.assertEqual(self.destination.read_text(), "Personal rules")
+
+    def test_user_edits_are_preserved_by_apply_and_reset(self) -> None:
+        self.assertEqual(self.apply(), 0)
+        edited = self.destination.read_text() + "\nNew personal rules\n"
+        self.destination.write_text(edited, encoding="utf-8")
+        self.assertEqual(self.apply(), 2)
+        self.assertEqual(self.cli("--reset"), 2)
+        self.assertEqual(self.destination.read_text(), edited)
+        self.assertTrue((self.pi_dir / codex_instruct.PI_STATE_FILENAME).exists())
+
+    def test_symlink_and_invalid_state_are_preserved(self) -> None:
+        self.pi_dir.mkdir()
+        external = self.root / "personal.md"
+        external.write_text("Personal rules", encoding="utf-8")
+        self.destination.symlink_to(external)
+        self.assertEqual(self.apply(), 2)
+        self.assertEqual(external.read_text(), "Personal rules")
+        self.destination.unlink()
+        state = self.pi_dir / codex_instruct.PI_STATE_FILENAME
+        state.write_text("{}", encoding="utf-8")
+        self.assertEqual(self.apply(), 2)
+        self.assertFalse(self.destination.exists())
+        self.assertEqual(state.read_text(), "{}")
+
+    def test_pi_directory_uses_explicit_path_then_environment_then_default(self) -> None:
+        with patch.dict(codex_instruct.os.environ, {"PI_CODING_AGENT_DIR": str(self.pi_dir)}):
+            self.assertEqual(codex_instruct.selected_pi_dir(None), self.pi_dir)
+            self.assertEqual(codex_instruct.selected_pi_dir(str(self.root)), self.root)
+        with patch.dict(codex_instruct.os.environ, {}, clear=True), patch.object(
+            Path, "home", return_value=self.root,
+        ):
+            self.assertEqual(codex_instruct.selected_pi_dir(None), self.root / ".pi" / "agent")
+
+    def test_pi_rejects_codex_snapshot_restore(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self.cli("--restore-snapshot", str(self.root / "config.toml.bak_test"))
+        self.assertEqual(raised.exception.code, 2)
+        self.assertFalse(self.pi_dir.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
