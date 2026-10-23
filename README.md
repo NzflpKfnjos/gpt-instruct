@@ -119,6 +119,9 @@ python3 codex-instruct.py --apply --version gpt-5.6-v45 --dry-run
 # 部署当前稳定版（--apply 默认同此命令）
 python3 codex-instruct.py --apply --version gpt-5.6-v45
 
+# 将当前稳定版部署到 pi（--apply --target pi 默认同此命令）
+python3 codex-instruct.py --apply --version gpt-5.6-v45 --target pi
+
 # 部署 gpt-6-astra-v2-rc1 预发布版
 python3 codex-instruct.py --apply --version gpt-6-v2-rc1
 
@@ -143,9 +146,13 @@ python3 codex-instruct.py --reset
 
 ### 部署到 pi
 
-使用 `--target pi` 将 rc2 提示词追加到 pi 的全局系统指令：
+使用 `--target pi` 将所选版本的提示词追加到 pi 的全局系统指令，默认使用当前稳定版：
 
 ```bash
+# 部署当前稳定版（可省略 --version gpt-5.6-v45）
+python3 codex-instruct.py --apply --version gpt-5.6-v45 --target pi
+
+# 部署 gpt-6.1-sol-v1-rc2 预发布版
 python3 codex-instruct.py --apply --version gpt-6.1-v1-rc2 --target pi
 
 # 预览部署 / 指定 pi agent 目录

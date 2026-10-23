@@ -117,6 +117,9 @@ python3 codex-instruct.py --apply --version gpt-5.6-v45 --dry-run
 # Deploy stable (--apply without --version is equivalent)
 python3 codex-instruct.py --apply --version gpt-5.6-v45
 
+# Deploy stable to Pi (--apply --target pi without --version is equivalent)
+python3 codex-instruct.py --apply --version gpt-5.6-v45 --target pi
+
 # Deploy the gpt-6-astra-v2-rc1 prerelease
 python3 codex-instruct.py --apply --version gpt-6-v2-rc1
 
@@ -141,9 +144,13 @@ The script records pre-deployment state. `--reset` preserves provider, model, au
 
 ### Deploy to Pi
 
-Use `--target pi` to append the rc2 prompt to Pi's global system instructions:
+Use `--target pi` to append the selected version's prompt to Pi's global system instructions, defaulting to the current stable release:
 
 ```bash
+# Deploy stable (--version gpt-5.6-v45 can be omitted)
+python3 codex-instruct.py --apply --version gpt-5.6-v45 --target pi
+
+# Deploy the gpt-6.1-sol-v1-rc2 prerelease
 python3 codex-instruct.py --apply --version gpt-6.1-v1-rc2 --target pi
 
 # Preview deployment / select a Pi agent directory
